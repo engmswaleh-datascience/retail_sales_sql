@@ -61,30 +61,40 @@ To maintain consistency across all queries:
 ## 🚀 How to Set Up and Run
 
 ### 1. Database Initialization
-Clone this repository and run the setup files in numerical order:
+Create the database and run the setup files in numerical order:
 
 ```bash
-# Step 1: Create the target database (connect to default postgres DB)
-psql -U postgres -d postgres -f 01_create_database.sql
+# Step 1: Create the target database (connect to default postgres DB) and schema
+01_create_database.sql
+
+CREATE DATABASE retail_analytics
+
+create schema retail_analytics;
 
 # Step 2: Build table structure
-psql -U postgres -d retail_analytics -f 02_create_tables.sql
+02_create_tables.sql
+
+CREATE TABLE IF NOT EXISTS customers()
+CREATE TABLE IF NOT EXISTS orders ()
 
 # Step 3: Populate customers and orders
-psql -U postgres -d retail_analytics -f 03_insert_customers.sql
-psql -U postgres -d retail_analytics -f 04_insert_orders.sql
+03_insert_customers.sql
+04_insert_orders.sql
 
-# Step 4: Validate row counts and integrity
-psql -U postgres -d retail_analytics -f 05_verify_data.sql
-```
+# Step 4: Create indexes
+05_CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders (customer_id);
+CREATE INDEX IF NOT EXISTS idx_orders_date ON orders (order_date);
 
-*(If using **pgAdmin**, create the database `retail_analytics` via the UI first, open the Query Tool on `retail_analytics`, and run scripts 02 through 05 sequentially.)*
+# Step 5: Validate row counts and integrity
+06_verify_data.sql
 
-### 2. Verify Data Ingestion
-Running `05_verify_data.sql` should report:
+### 2. Verify Data
+select * from customers;
+select * from orders;
+
+Running verify_data.sql should report:
 * **150** total customers
 * **800** total orders
-* **0** unlinked orphan orders
 * Order date range spanning **January 2025 through September 2026**
 
 ---
@@ -92,6 +102,13 @@ Running `05_verify_data.sql` should report:
 ## 🛠️ Key Database Objects Created
 
 ### Monthly Sales Summary View
+SELECT
+    ROUND(SUM(quantity * unit_price * (1 - discount / 100)), 2) AS completed_revenue,
+    ROUND(SUM(quantity * cost_price), 2)                         AS completed_cost,
+    ROUND(SUM(quantity * unit_price * (1 - discount / 100)) - SUM(quantity * cost_price), 2) AS completed_profit
+FROM orders
+WHERE order_status = 'Completed';
+
 Rather than writing identical grouping logic for recurring reports, the `monthly_sales_summary` view consolidates monthly performance:
 
 ```sql
@@ -107,18 +124,24 @@ WHERE order_status = 'Completed'
 GROUP BY DATE_TRUNC('month', order_date);
 ```
 
-### Customer Revenue Lookup Function
-A defensive SQL function that retrieves net completed revenue for any customer ID, returning `0` if no completed orders exist:
+### Important Business rules
 
-```sql
-CREATE OR REPLACE FUNCTION get_customer_revenue(p_customer_id INTEGER)
-RETURNS NUMERIC LANGUAGE sql AS $$
-    SELECT COALESCE(SUM(quantity * unit_price * (1 - discount / 100.0)), 0)
-    FROM orders 
-    WHERE customer_id = p_customer_id 
-      AND order_status = 'Completed';
-$$;
-```
+| **Measure** | **Formulae**
+| **Revenue** | `quantity * unit_price * (1 - discount / 100)` |
+| **Cost** | `quantity * cost_price` |
+| **Profit** | `revenue - cost` |
+| **Profit margin %** | `profit / revenue * 100` — use `NULLIF(revenue, 0)` so you never divide by zero |
+
+1. **Money questions use Completed orders only.** Revenue, cost, profit, spending and averages count
+   only `order_status = 'Completed'`, unless a question says otherwise. Pending orders are not paid
+   yet; cancelled ones never will be.
+2. **Order counts include every order**, whatever its status ("how many orders" means all of them).
+3. **Customer counts count distinct customers.**
+4. **"Today" is the latest `order_date` in the data**, not your computer's date — so everyone gets the
+   same answer. Get it with `SELECT MAX(order_date) FROM orders`.
+5. **Months** mean year *and* month — January 2025 and January 2026 are different months. Use
+   `DATE_TRUNC('month', order_date)`.
+6. Round money to 2 decimal places with `ROUND(…, 2)`.
 
 ---
 
